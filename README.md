@@ -11,7 +11,7 @@ Para ejecutar el cliente en cualquier computadora con Windows, Linux o macOS ún
 2. Las siguientes librerías de Python:
    * `customtkinter` (interfaz gráfica)
    * `pillow` (carga y procesamiento de fotos de perfil)
-
+pip install customtkinter pillow
 ---
 
 ## 📁 Estructura de Archivos Necesarios
