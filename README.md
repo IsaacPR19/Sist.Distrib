@@ -12,6 +12,8 @@ Para ejecutar el cliente en cualquier computadora con Windows, Linux o macOS ún
    * `customtkinter` (interfaz gráfica)
    * `pillow` (carga y procesamiento de fotos de perfil)
    * pip install customtkinter pillow
+   * Si se tiene problemas en la instalacion en distribucion Linux agregar el comando:
+   * -- break-system-packages al final
 ---
 Entra al enlace del repositorio en GitHub ([https://github.com/IsaacPR19/Sist.Distrib](https://github.com/IsaacPR19/Sist.Distrib)).   Haz clic en el botón verde <> Code y selecciona Download ZIP.  
 Descomprime el archivo Sist.Distrib-main.zip en cualquier carpeta de su computadora.Verificación: Al abrir la carpeta descomprimida, verá adentro assets, client, server, README.md y requirements.txt.
