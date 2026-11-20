@@ -1,5 +1,15 @@
+"""
+Módulo de acceso y persistencia de datos para el sistema distribuido Minioms.
+
+Gestiona las conexiones hacia Microsoft SQL Server mediante pyodbc y ejecuta
+consultas parametrizadas para la autenticación y auto-registro de usuarios,
+creación de salas (privadas, grupos y canales), control de permisos y
+almacenamiento/recuperación del historial de mensajes.
+"""
+
 import pyodbc
 
+# Cadena de conexión ODBC hacia la instancia local de SQL Server en AWS
 DB_CONFIG = (
     "DRIVER={ODBC Driver 17 for SQL Server};"
     "SERVER=localhost;"
@@ -11,10 +21,22 @@ DB_CONFIG = (
 
 
 def obtener_conexion():
+    """Establece y devuelve una conexión activa hacia la base de datos SQL Server."""
     return pyodbc.connect(DB_CONFIG)
 
 
 def registrar_usuario(username, passwd, id_foto_perfil):
+    """
+    Registra un nuevo usuario en la tabla Usuarios.
+
+    Args:
+        username (str): Nombre de usuario único.
+        passwd (str): Contraseña de acceso.
+        id_foto_perfil (int): Identificador del avatar seleccionado (1-9).
+
+    Returns:
+        tuple[bool, str]: Tupla (éxito, mensaje descriptivo).
+    """
     try:
         with obtener_conexion() as conn:
             cursor = conn.cursor()
@@ -31,6 +53,22 @@ def registrar_usuario(username, passwd, id_foto_perfil):
 
 
 def validar_login(username, passwd, id_foto_perfil=1):
+    """
+    Valida las credenciales de inicio de sesión o auto-registra usuarios nuevos.
+
+    Si el usuario existe en la base de datos, verifica su contraseña, actualiza
+    su estado en línea y su avatar. Si no existe, lo inserta automáticamente
+    para permitir el acceso inmediato al sistema.
+
+    Args:
+        username (str): Nombre de usuario.
+        passwd (str): Contraseña ingresada.
+        id_foto_perfil (int, optional): Avatar elegido (1-9). Por defecto 1.
+
+    Returns:
+        dict | None: Diccionario con 'id_usuario', 'username' e 'id_foto_perfil'
+                     si la autenticación es exitosa, o None si la contraseña falla.
+    """
     try:
         with obtener_conexion() as conn:
             cursor = conn.cursor()
@@ -41,6 +79,7 @@ def validar_login(username, passwd, id_foto_perfil=1):
             fila = cursor.fetchone()
 
             if fila:
+                # Usuario existente: verificar coincidencia de contraseña
                 if fila.passwd != passwd:
                     return None
                 cursor.execute(
@@ -54,6 +93,7 @@ def validar_login(username, passwd, id_foto_perfil=1):
                     "id_foto_perfil": id_foto_perfil,
                 }
             else:
+                # Usuario nuevo: registro automático con estado activo
                 cursor.execute(
                     """
                     INSERT INTO Usuarios (username, passwd, en_linea, id_foto_perfil)
@@ -75,6 +115,7 @@ def validar_login(username, passwd, id_foto_perfil=1):
 
 
 def marcar_offline(id_usuario):
+    """Actualiza el estado de conexión del usuario a desconectado (en_linea = 0)."""
     try:
         with obtener_conexion() as conn:
             cursor = conn.cursor()
@@ -85,6 +126,16 @@ def marcar_offline(id_usuario):
 
 
 def obtener_o_crear_privado(id_usuario1, id_usuario2):
+    """
+    Busca una sala privada existente entre dos usuarios o crea una nueva.
+
+    Args:
+        id_usuario1 (int): ID del usuario solicitante.
+        id_usuario2 (int): ID del usuario destinatario.
+
+    Returns:
+        int | None: ID de la sala privada en Salas_chat, o None ante error.
+    """
     try:
         with obtener_conexion() as conn:
             cursor = conn.cursor()
@@ -102,6 +153,7 @@ def obtener_o_crear_privado(id_usuario1, id_usuario2):
             if fila:
                 return fila.id_sala
 
+            # Crear nueva sala privada y registrar ambos participantes con rol estándar (2)
             cursor.execute(
                 "INSERT INTO Salas_chat (nombre, tipo_sala, id_creador) OUTPUT INSERTED.id_sala VALUES (NULL, 'PRIVADO', ?)",
                 (id_usuario1,),
@@ -118,6 +170,14 @@ def obtener_o_crear_privado(id_usuario1, id_usuario2):
 
 
 def crear_grupo(nombre_grupo, id_creador, miembros_ids):
+    """
+    Crea una sala grupal y asocia a sus integrantes en Miembros_sala.
+
+    El creador recibe rol de administrador (1) y los demás integrantes rol (2).
+
+    Returns:
+        int | None: ID de la nueva sala grupal, o None ante error.
+    """
     try:
         with obtener_conexion() as conn:
             cursor = conn.cursor()
@@ -137,6 +197,12 @@ def crear_grupo(nombre_grupo, id_creador, miembros_ids):
 
 
 def crear_canal(nombre_canal, id_creador):
+    """
+    Crea un canal de difusión unidireccional asignando rol de creador (1) al dueño.
+
+    Returns:
+        int | None: ID del canal creado, o None ante error.
+    """
     try:
         with obtener_conexion() as conn:
             cursor = conn.cursor()
@@ -154,6 +220,7 @@ def crear_canal(nombre_canal, id_creador):
 
 
 def unirse_canal(id_sala, id_usuario):
+    """Suscribe a un usuario como lector (rol = 2) dentro de un canal existente."""
     try:
         with obtener_conexion() as conn:
             cursor = conn.cursor()
@@ -172,6 +239,15 @@ def unirse_canal(id_sala, id_usuario):
 
 
 def puede_escribir_en_sala(id_sala, id_usuario):
+    """
+    Verifica si un usuario tiene permisos de escritura en una sala determinada.
+
+    En el Chat General (id_sala = 1) todos pueden escribir. En salas de tipo
+    'CANAL', únicamente el creador (rol = 1) tiene permiso de publicación.
+
+    Returns:
+        bool: True si está autorizado para enviar mensajes, False en caso contrario.
+    """
     if id_sala == 1:
         return True
     try:
@@ -198,6 +274,7 @@ def puede_escribir_en_sala(id_sala, id_usuario):
 
 
 def obtener_miembros_sala(id_sala):
+    """Devuelve una lista con los IDs de todos los usuarios pertenecientes a una sala."""
     try:
         with obtener_conexion() as conn:
             cursor = conn.cursor()
@@ -209,6 +286,7 @@ def obtener_miembros_sala(id_sala):
 
 
 def guardar_mensaje_texto(id_sala, id_remitente, contenido_texto):
+    """Inserta un mensaje de texto plano en la tabla Mensajes."""
     try:
         with obtener_conexion() as conn:
             cursor = conn.cursor()
@@ -222,6 +300,7 @@ def guardar_mensaje_texto(id_sala, id_remitente, contenido_texto):
 
 
 def guardar_mensaje_sticker(id_sala, id_remitente, id_sticker):
+    """Inserta un mensaje de tipo sticker (1-9) en la tabla Mensajes."""
     try:
         with obtener_conexion() as conn:
             cursor = conn.cursor()
@@ -235,6 +314,7 @@ def guardar_mensaje_sticker(id_sala, id_remitente, id_sticker):
 
 
 def listar_canales():
+    """Retorna una lista de tuplas (id_sala, nombre) de todos los canales disponibles."""
     try:
         with obtener_conexion() as conn:
             cursor = conn.cursor()
@@ -246,7 +326,12 @@ def listar_canales():
 
 
 def obtener_historial_sala(id_sala):
-    """Devuelve los mensajes guardados en formato compatible con NUEVO_MSG."""
+    """
+    Recupera todos los mensajes almacenados de una sala ordenados cronológicamente.
+
+    Returns:
+        list[str]: Lista de paquetes formateados según el protocolo NUEVO_MSG.
+    """
     try:
         with obtener_conexion() as conn:
             cursor = conn.cursor()
@@ -274,6 +359,7 @@ def obtener_historial_sala(id_sala):
 
 
 def obtener_nombre_sala(id_sala):
+    """Consulta y devuelve el nombre de una sala a partir de su identificador."""
     try:
         with obtener_conexion() as conn:
             cursor = conn.cursor()

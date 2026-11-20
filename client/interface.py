@@ -1,3 +1,11 @@
+"""
+Interfaz gráfica de usuario (GUI) para el cliente de mensajería Minioms (Wasap).
+
+Construida con CustomTkinter y Pillow. Emplea una cola thread-safe (queue.Queue)
+combinada con el bucle de eventos de Tkinter (.after) para procesar de forma
+segura los paquetes recibidos desde el hilo de red sin bloquear la interfaz.
+"""
+
 import customtkinter as ctk
 from PIL import Image
 from pathlib import Path
@@ -7,10 +15,21 @@ import queue
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
+# Ruta relativa hacia los avatares (assets/avatars/perfil1.jpg ... perfil9.jpg)
 CARPETA_AVATARS = Path(__file__).resolve().parent.parent / "assets" / "avatars"
 
 
 def cargar_foto(id_foto, tamano=(65, 65)):
+    """
+    Carga y redimensiona la imagen de perfil correspondiente al ID indicado.
+
+    Args:
+        id_foto (int): Número de avatar (1-9).
+        tamano (tuple[int, int]): Dimensiones (ancho, alto) en píxeles.
+
+    Returns:
+        ctk.CTkImage | None: Objeto imagen listo para widgets CustomTkinter.
+    """
     for extension in (".png", ".jpg", ".jpeg"):
         ruta = CARPETA_AVATARS / f"perfil{id_foto}{extension}"
 
@@ -28,6 +47,8 @@ def cargar_foto(id_foto, tamano=(65, 65)):
 
 
 class Wasap(ctk.CTk):
+    """Ventana principal de la aplicación cliente Minioms."""
+
     def __init__(self):
         super().__init__()
 
@@ -35,10 +56,12 @@ class Wasap(ctk.CTk):
         self.geometry("500x760")
         self.minsize(480, 700)
 
+        # Estado de sesión y navegación
         self.usuario = ""
         self.foto = 1
         self.seccion_actual = "login"
 
+        # Estructuras en memoria para usuarios en línea y salas activas
         self.usuarios_online = []
         self.ids_usuarios = {}
         self.salas_privadas = {}
@@ -51,10 +74,12 @@ class Wasap(ctk.CTk):
         self.mensajes_privados = {}
         self.usuario_destino = None
 
+        # Referencias visuales para evitar recolección de basura en imágenes
         self.imagenes_perfil = []
         self.imagen_usuario = None
         self.caja_general = None
 
+        # Cola segura entre hilos para comunicar el socket con el hilo gráfico
         self.cola_mensajes = queue.Queue()
 
         self.cliente = ClienteSocket(
@@ -69,19 +94,22 @@ class Wasap(ctk.CTk):
         self.mostrar_login()
 
     # ========================================================
-    # FUNCIONES GENERALES
+    # UTILIDADES DE INTERFAZ
     # ========================================================
     def limpiar(self):
+        """Destruye todos los widgets de la ventana raíz."""
         for widget in self.winfo_children():
             widget.destroy()
 
     def limpiar_contenido(self):
+        """Limpia únicamente el panel derecho de contenido conservando el menú lateral."""
         for widget in self.contenido.winfo_children():
             widget.destroy()
 
         self.caja_general = None
 
     def titulo_seccion(self, texto):
+        """Renderiza un encabezado estandarizado en la parte superior del panel derecho."""
         ctk.CTkLabel(
             self.contenido,
             text=texto,
@@ -89,18 +117,24 @@ class Wasap(ctk.CTk):
         ).pack(pady=20)
 
     def agregar_mensaje(self, caja, texto):
+        """Inserta una línea de mensaje en un CTkTextbox de solo lectura y hace scroll al final."""
         caja.configure(state="normal")
         caja.insert("end", texto + "\n\n")
         caja.configure(state="disabled")
         caja.see("end")
 
     # ========================================================
-    # COMUNICACIÓN CON EL SERVIDOR
+    # SINCRONIZACIÓN CON EL SERVIDOR (HILO PRINCIPAL)
     # ========================================================
     def recibir_paquete(self, paquete):
+        """Callback invocado desde el hilo de red: encola el paquete para procesarlo en UI."""
         self.cola_mensajes.put(paquete)
 
     def revisar_mensajes(self):
+        """
+        Consume periódicamente (cada 100 ms) los paquetes entrantes de la cola
+        y actualiza los componentes gráficos correspondientes.
+        """
         while not self.cola_mensajes.empty():
             paquete = self.cola_mensajes.get()
             print("[SERVIDOR]", paquete)
@@ -297,27 +331,27 @@ class Wasap(ctk.CTk):
                     if tipo == "TEXTO":
                         mensaje = f"{nombre}: {contenido}"
 
-                        # 1. CHAT GENERAL
+                        # 1. Chat General (id_sala == 1)
                         if id_sala == 1:
                             self.mensajes_general.append(mensaje)
                             if self.seccion_actual == "general" and self.caja_general is not None:
                                 self.agregar_mensaje(self.caja_general, mensaje)
 
-                        # 2. GRUPOS
+                        # 2. Salas Grupales
                         elif any(g.get("id_sala") == id_sala for g in self.grupos):
                             grupo_recibido = next(g for g in self.grupos if g.get("id_sala") == id_sala)
                             grupo_recibido["mensajes"].append(mensaje)
                             if self.seccion_actual == "grupo_abierto" and self.grupo_actual_id == id_sala:
                                 self.abrir_chat_grupo(grupo_recibido, solicitar_historial=False)
 
-                        # 3. CANALES
+                        # 3. Canales de Difusión
                         elif any(c.get("id_sala") == id_sala for c in self.canales):
                             canal_recibido = next(c for c in self.canales if c.get("id_sala") == id_sala)
                             canal_recibido["mensajes"].append(mensaje)
                             if self.seccion_actual == "canal_abierto" and self.canal_actual_id == id_sala:
                                 self.abrir_canal(canal_recibido)
 
-                        # 4. MENSAJES PRIVADOS
+                        # 4. Conversaciones Privadas 1 a 1
                         else:
                             if id_remitente == self.cliente.id_usuario:
                                 destinatario = next((u for u, sala in self.salas_privadas.items() if sala == id_sala), None)
@@ -333,13 +367,15 @@ class Wasap(ctk.CTk):
         self.after(100, self.revisar_mensajes)
 
     def cerrar_programa(self):
+        """Desconecta el socket del servidor antes de cerrar la ventana."""
         self.cliente.desconectar()
         self.destroy()
 
     # ========================================================
-    # INICIO DE SESIÓN
+    # PANTALLA DE INICIO DE SESIÓN
     # ========================================================
     def mostrar_login(self):
+        """Construye la vista de autenticación con selector de 9 fotos de perfil."""
         self.seccion_actual = "login"
         self.limpiar()
 
@@ -363,6 +399,7 @@ class Wasap(ctk.CTk):
 
         self.imagenes_perfil = []
 
+        # Cuadrícula 3x3 con los 9 avatares disponibles
         for numero in range(1, 10):
             imagen = cargar_foto(numero, (65, 65))
             self.imagenes_perfil.append(imagen)
@@ -393,6 +430,7 @@ class Wasap(ctk.CTk):
         self.boton_conectar.pack(pady=10)
 
     def entrar(self):
+        """Valida los campos del formulario, conecta el socket y envía el comando LOGIN."""
         usuario = self.entrada_usuario.get().strip()
         password = self.entrada_password.get().strip()
 
@@ -400,6 +438,7 @@ class Wasap(ctk.CTk):
             self.error_login.configure(text="Ingresa tu usuario y contraseña", text_color="red")
             return
 
+        # Evitar caracteres reservados del protocolo '|' y saltos de línea
         if any(c in usuario + password for c in ("|", "\n", "\r")):
             self.error_login.configure(text="No uses | ni saltos de línea", text_color="red")
             return
@@ -419,9 +458,10 @@ class Wasap(ctk.CTk):
         self.cliente.login(usuario, password, self.foto)
 
     # ========================================================
-    # VENTANA PRINCIPAL
+    # VENTANA PRINCIPAL Y MENÚ DE NAVEGACIÓN
     # ========================================================
     def mostrar_principal(self):
+        """Construye el layout principal dividido en barra lateral y panel de chat."""
         self.limpiar()
 
         self.geometry("1050x650")
@@ -456,9 +496,10 @@ class Wasap(ctk.CTk):
         self.mostrar_chat_general()
 
     # ========================================================
-    # CHAT GENERAL
+    # SECCIÓN 1: CHAT GENERAL
     # ========================================================
     def mostrar_chat_general(self):
+        """Renderiza la sala pública global (id_sala = 1)."""
         self.seccion_actual = "general"
         self.limpiar_contenido()
         self.titulo_seccion("Chat general")
@@ -489,9 +530,10 @@ class Wasap(ctk.CTk):
         entrada.bind("<Return>", lambda evento: enviar())
 
     # ========================================================
-    # MENSAJES PRIVADOS
+    # SECCIÓN 2: MENSAJES PRIVADOS
     # ========================================================
     def mostrar_privados(self):
+        """Renderiza la vista de mensajería directa entre dos usuarios conectados."""
         self.seccion_actual = "privados"
         self.limpiar_contenido()
         self.titulo_seccion("Mensajes privados")
@@ -530,6 +572,7 @@ class Wasap(ctk.CTk):
         self.actualizar_privados()
 
     def seleccionar_usuario(self, nombre):
+        """Cambia el destinatario activo y solicita al servidor su sala privada."""
         self.usuario_destino = nombre
         id_destino = self.ids_usuarios.get(nombre)
         if id_destino is not None:
@@ -537,6 +580,7 @@ class Wasap(ctk.CTk):
         self.actualizar_privados()
 
     def actualizar_privados(self):
+        """Refresca el historial visible de la conversación privada seleccionada."""
         self.caja_privados.configure(state="normal")
         self.caja_privados.delete("1.0", "end")
 
@@ -547,6 +591,7 @@ class Wasap(ctk.CTk):
         self.caja_privados.see("end")
 
     def enviar_privado(self):
+        """Envía el mensaje escrito hacia la sala privada del destinatario actual."""
         texto = self.entrada_privado.get().strip()
         if not texto or self.usuario_destino is None:
             return
@@ -565,9 +610,10 @@ class Wasap(ctk.CTk):
         self.entrada_privado.delete(0, "end")
 
     # ========================================================
-    # GRUPOS
+    # SECCIÓN 3: GRUPOS
     # ========================================================
     def mostrar_grupos(self):
+        """Renderiza el formulario de creación de grupos y la lista de salas del usuario."""
         self.seccion_actual = "grupos"
         self.limpiar_contenido()
         self.titulo_seccion("Grupos")
@@ -631,6 +677,7 @@ class Wasap(ctk.CTk):
             ).pack(side="right", padx=10, pady=8)
 
     def abrir_chat_grupo(self, grupo, solicitar_historial=True):
+        """Despliega la ventana interna de conversación de un grupo específico."""
         self.seccion_actual = "grupo_abierto"
         self.grupo_actual_id = grupo.get("id_sala")
 
@@ -676,9 +723,10 @@ class Wasap(ctk.CTk):
         entrada.bind("<Return>", lambda evento: enviar_mensaje_grupo())
 
     # ========================================================
-    # CANALES
+    # SECCIÓN 4: CANALES DE DIFUSIÓN
     # ========================================================
     def mostrar_canales(self, actualizar=True):
+        """Renderiza la vista para crear canales y explorar los canales disponibles."""
         self.seccion_actual = "canales"
         self.limpiar_contenido()
         self.titulo_seccion("Canales")
@@ -736,6 +784,12 @@ class Wasap(ctk.CTk):
             ).pack(side="right", padx=10, pady=8)
 
     def abrir_canal(self, canal):
+        """
+        Abre la vista de lectura/publicación de un canal.
+
+        Muestra el botón de suscripción a lectores nuevos y habilita la barra
+        de publicación únicamente si el usuario actual es el creador del canal.
+        """
         self.seccion_actual = "canal_abierto"
         self.canal_actual_id = canal["id_sala"]
         self.limpiar_contenido()

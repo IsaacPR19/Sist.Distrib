@@ -1,3 +1,11 @@
+"""
+Servidor concurrente TCP para la aplicación distribuida Minioms.
+
+Escucha conexiones entrantes en el puerto 3081, asigna un hilo independiente
+(daemon thread) por cada cliente conectado y enruta paquetes delimitados por
+saltos de línea ('\\n') hacia la capa de persistencia en SQL Server.
+"""
+
 import socket
 import threading
 import database
@@ -6,11 +14,14 @@ HOST = "0.0.0.0"
 PORT = 3081
 BUFFER_SIZE = 4096
 
+# Lista compartida de sesiones activas protegida por exclusión mutua (Lock)
 clientes_conectados = []
 lock_clientes = threading.Lock()
 
 
 class Cliente:
+    """Representa la sesión y el socket TCP de un cliente conectado al servidor."""
+
     def __init__(self, conn, addr):
         self.conn = conn
         self.addr = addr
@@ -20,6 +31,7 @@ class Cliente:
 
 
 def enviar_paquete(conn, texto):
+    """Codifica en UTF-8 y envía un mensaje terminado en '\\n' a través de un socket."""
     try:
         mensaje = texto + "\n"
         conn.sendall(mensaje.encode("utf-8"))
@@ -28,6 +40,7 @@ def enviar_paquete(conn, texto):
 
 
 def reenviar_a_sala(miembros_ids, paquete):
+    """Difunde un paquete únicamente a los clientes conectados que pertenecen a una sala."""
     with lock_clientes:
         for c in clientes_conectados:
             if c.id_usuario in miembros_ids:
@@ -35,6 +48,7 @@ def reenviar_a_sala(miembros_ids, paquete):
 
 
 def broadcast_usuarios_online():
+    """Notifica a todos los clientes autenticados la lista actualizada de usuarios en línea."""
     with lock_clientes:
         lista = [
             f"{c.id_usuario}:{c.username}:{c.id_foto_perfil}"
@@ -47,6 +61,7 @@ def broadcast_usuarios_online():
 
 
 def desconectar_cliente(cliente):
+    """Limpia la sesión de un cliente al cerrar su conexión y actualiza su estado en BD."""
     with lock_clientes:
         if cliente in clientes_conectados:
             clientes_conectados.remove(cliente)
@@ -57,12 +72,28 @@ def desconectar_cliente(cliente):
 
     try:
         cliente.conn.close()
-    except:
+    except Exception:
         pass
     print(f"[-] Cliente desconectado: {cliente.addr} ({cliente.username})")
 
 
 def procesar_comando(cliente, linea):
+    """
+    Interpreta y ejecuta una instrucción del protocolo de aplicación.
+
+    Comandos soportados:
+        - REGISTRO|username|passwd|id_foto
+        - LOGIN|username|passwd[|id_foto]
+        - PRIVADO|id_destino
+        - CREAR_GRUPO|nombre_grupo|id1,id2,...
+        - CREAR_CANAL|nombre_canal
+        - UNIRSE_CANAL|id_sala
+        - MSG_TEXTO|id_sala|contenido
+        - MSG_STICKER|id_sala|id_sticker
+        - LISTAR_CANALES
+        - HISTORIAL_GRUPO|id_sala
+        - HISTORIAL_CANAL|id_sala
+    """
     partes = linea.split("|")
     accion = partes[0]
 
@@ -138,6 +169,7 @@ def procesar_comando(cliente, linea):
         database.guardar_mensaje_texto(id_sala, cliente.id_usuario, texto)
         paquete = f"NUEVO_MSG|{id_sala}|{cliente.id_usuario}|{cliente.username}|{cliente.id_foto_perfil}|TEXTO|{texto}"
         if id_sala == 1:
+            # Difusión global en el Chat General
             with lock_clientes:
                 for c in clientes_conectados:
                     if c.id_usuario is not None:
@@ -191,6 +223,12 @@ def procesar_comando(cliente, linea):
 
 
 def client_thread(cliente):
+    """
+    Ciclo de lectura en hilo dedicado para cada cliente conectado.
+
+    Ensambla el flujo continuo TCP separando paquetes completos por '\\n'
+    para evitar fragmentación o concatenación de mensajes en el buffer.
+    """
     buffer = ""
     try:
         while True:
